@@ -1,0 +1,7 @@
+.git
+.gitignore
+README.md
+*.zip
+node_modules
+npm-debug.log*
+.DS_Store

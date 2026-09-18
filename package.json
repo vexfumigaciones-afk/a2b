@@ -1,0 +1,17 @@
+{
+  "name": "a2b-by-vex-bridge",
+  "version": "0.8.0",
+  "private": true,
+  "description": "A2B by VEX bridge for Aspel ADM, CFDI delivery and field operations",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check lib/crypto-store.js && node --check lib/aspel.js"
+  },
+  "dependencies": {
+    "playwright": "1.55.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
