@@ -22,13 +22,24 @@ function saveCredentials(dataDir, creds) {
   return { rfc: clean.rfc, userMasked: mask(clean.user) };
 }
 
+function envCredentials() {
+  const c = {
+    rfc: String(process.env.ASPEL_RFC || '').trim().toUpperCase(),
+    user: String(process.env.ASPEL_USER || '').trim(),
+    password: String(process.env.ASPEL_PASSWORD || '')
+  };
+  return c.rfc && c.user && c.password ? c : null;
+}
+
 function getCredentials(dataDir) {
-  return readEncrypted(files(dataDir).creds, 'aspel-credentials');
+  const stored = readEncrypted(files(dataDir).creds, 'aspel-credentials');
+  return stored || envCredentials();
 }
 
 function credentialStatus(dataDir) {
-  const c = getCredentials(dataDir);
-  return c ? { configured: true, rfc: c.rfc || '', userMasked: mask(c.user) } : { configured: false };
+  const stored = readEncrypted(files(dataDir).creds, 'aspel-credentials');
+  const c = stored || envCredentials();
+  return c ? { configured: true, rfc: c.rfc || '', userMasked: mask(c.user), source: stored ? 'encrypted-data' : 'render-env' } : { configured: false };
 }
 
 function mask(s) {
@@ -181,9 +192,142 @@ async function testLogin(dataDir, admUrl) {
   }
 }
 
-function sessionStatus(dataDir){const f=files(dataDir).session;if(!fs.existsSync(f))return{saved:false};try{const st=fs.statSync(f);return{saved:true,updatedAt:st.mtime.toISOString()}}catch{return{saved:true}}}
+// Session Guardian: la sesión de Aspel vive en el Bridge, no en la pestaña /setup.
+// Se serializan las renovaciones para evitar abrir dos Chromiums al mismo tiempo.
+let ensurePromise = null;
+const guardian = {
+  timer: null,
+  started: false,
+  running: false,
+  dataDir: '',
+  admUrl: '',
+  intervalMs: 8 * 60 * 1000,
+  lastAttemptAt: '',
+  lastOkAt: '',
+  lastError: '',
+  lastUrl: '',
+  lastReused: false
+};
+
+function savedSessionStatus(dataDir) {
+  const f = files(dataDir).session;
+  if (!fs.existsSync(f)) return { saved: false };
+  try {
+    const st = fs.statSync(f);
+    return { saved: true, updatedAt: st.mtime.toISOString() };
+  } catch {
+    return { saved: true };
+  }
+}
+
+function guardianRuntimeStatus() {
+  return {
+    started: guardian.started,
+    running: guardian.running,
+    intervalMs: guardian.intervalMs,
+    lastAttemptAt: guardian.lastAttemptAt || '',
+    lastOkAt: guardian.lastOkAt || '',
+    lastError: guardian.lastError || '',
+    lastUrl: guardian.lastUrl || '',
+    lastReused: !!guardian.lastReused,
+    nextCheckApprox: guardian.started && guardian.lastAttemptAt
+      ? new Date(new Date(guardian.lastAttemptAt).getTime() + guardian.intervalMs).toISOString()
+      : ''
+  };
+}
+
+function sessionStatus(dataDir) {
+  return { ...savedSessionStatus(dataDir), guardian: guardianRuntimeStatus() };
+}
+
 function browserLaunchOptions(){return{headless:true,chromiumSandbox:false,args:['--no-sandbox','--disable-dev-shm-usage','--disable-gpu','--disable-software-rasterizer','--disable-extensions','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-sync','--disable-translate','--mute-audio','--no-first-run','--no-zygote','--renderer-process-limit=1','--disable-features=IsolateOrigins,site-per-process','--js-flags=--max-old-space-size=128']}}
-async function ensureSession(dataDir,admUrl){const creds=getCredentials(dataDir);if(!creds)throw new Error('Primero guarda las credenciales de Aspel en /setup.');let browser=null,context=null;try{browser=await chromium.launch(browserLaunchOptions());let saved=null;try{saved=readEncrypted(files(dataDir).session,'aspel-session')}catch{}context=await browser.newContext({viewport:{width:900,height:650},...(saved?{storageState:saved}:{})});const page=await context.newPage();await page.route('**/*',route=>{const t=route.request().resourceType();if(['image','media','font'].includes(t))return route.abort();return route.continue()});const principal=new URL('/principal.html',admUrl).href;await page.goto(saved?principal:admUrl,{waitUntil:'domcontentloaded',timeout:45000});await page.waitForTimeout(2200);const passVisible=await page.locator('input[type="password"]').first().isVisible().catch(()=>false);const isLogin=/login/i.test(page.url())||passVisible;if(!isLogin){const state=await context.storageState();writeEncrypted(files(dataDir).session,state,'aspel-session');return{ok:true,reused:!!saved,url:page.url(),note:saved?'Sesión Aspel reutilizada correctamente.':'Sesión Aspel activa.'}}}catch(e){const msg=String(e&&e.message||e);if(!/login/i.test(msg))console.warn('ASPEL_SESSION_REUSE',msg)}finally{if(context)await context.close().catch(()=>{});if(browser)await browser.close().catch(()=>{})}const fresh=await testLogin(dataDir,admUrl);if(!fresh.ok)throw new Error(fresh.note||'No se pudo iniciar sesión en Aspel.');return{...fresh,reused:false,note:'Sesión Aspel renovada automáticamente. '+fresh.note}}
+
+async function ensureSessionUnlocked(dataDir,admUrl){
+  const creds=getCredentials(dataDir);
+  if(!creds)throw new Error('Primero guarda las credenciales de Aspel en /setup.');
+  let browser=null,context=null;
+  try{
+    browser=await chromium.launch(browserLaunchOptions());
+    let saved=null;
+    try{saved=readEncrypted(files(dataDir).session,'aspel-session')}catch{}
+    context=await browser.newContext({viewport:{width:900,height:650},...(saved?{storageState:saved}:{})});
+    const page=await context.newPage();
+    await page.route('**/*',route=>{
+      const t=route.request().resourceType();
+      if(['image','media','font'].includes(t))return route.abort();
+      return route.continue();
+    });
+    const principal=new URL('/principal.html',admUrl).href;
+    await page.goto(saved?principal:admUrl,{waitUntil:'domcontentloaded',timeout:45000});
+    await page.waitForTimeout(2200);
+    const passVisible=await page.locator('input[type="password"]').first().isVisible().catch(()=>false);
+    const isLogin=/login/i.test(page.url())||passVisible;
+    if(!isLogin){
+      const state=await context.storageState();
+      writeEncrypted(files(dataDir).session,state,'aspel-session');
+      return{ok:true,reused:!!saved,url:page.url(),note:saved?'Sesión Aspel reutilizada y refrescada.':'Sesión Aspel activa.'};
+    }
+  }catch(e){
+    const msg=String(e&&e.message||e);
+    if(!/login/i.test(msg))console.warn('ASPEL_SESSION_REUSE',msg);
+  }finally{
+    if(context)await context.close().catch(()=>{});
+    if(browser)await browser.close().catch(()=>{});
+  }
+  const fresh=await testLogin(dataDir,admUrl);
+  if(!fresh.ok)throw new Error(fresh.note||'No se pudo iniciar sesión en Aspel.');
+  return{...fresh,reused:false,note:'Sesión Aspel renovada automáticamente. '+fresh.note};
+}
+
+async function ensureSession(dataDir,admUrl){
+  if(ensurePromise)return ensurePromise;
+  guardian.running=true;
+  guardian.lastAttemptAt=new Date().toISOString();
+  ensurePromise=(async()=>{
+    try{
+      const result=await ensureSessionUnlocked(dataDir,admUrl);
+      guardian.lastOkAt=new Date().toISOString();
+      guardian.lastError='';
+      guardian.lastUrl=result.url||'';
+      guardian.lastReused=!!result.reused;
+      return result;
+    }catch(e){
+      guardian.lastError=String(e&&e.message||e);
+      throw e;
+    }finally{
+      guardian.running=false;
+      ensurePromise=null;
+    }
+  })();
+  return ensurePromise;
+}
+
+function startSessionGuardian(dataDir,admUrl,intervalMs){
+  guardian.dataDir=dataDir;
+  guardian.admUrl=admUrl;
+  guardian.intervalMs=Math.max(2*60*1000,Number(intervalMs||process.env.ASPEL_KEEPALIVE_MS||8*60*1000));
+  guardian.started=true;
+  if(guardian.timer)clearInterval(guardian.timer);
+  const tick=async()=>{
+    try{
+      if(!getCredentials(dataDir))return;
+      await ensureSession(dataDir,admUrl);
+    }catch(e){
+      console.warn('ASPEL_GUARDIAN',String(e&&e.message||e));
+    }
+  };
+  const warm=setTimeout(tick,5000);
+  if(warm.unref)warm.unref();
+  guardian.timer=setInterval(tick,guardian.intervalMs);
+  if(guardian.timer.unref)guardian.timer.unref();
+  return guardianRuntimeStatus();
+}
+
+function stopSessionGuardian(){
+  if(guardian.timer)clearInterval(guardian.timer);
+  guardian.timer=null;
+  guardian.started=false;
+}
 
 async function pingAspel(admUrl) {
   const started = Date.now();
@@ -195,6 +339,112 @@ async function pingAspel(admUrl) {
     return { ok: r.status >= 200 && r.status < 500, status: r.status, finalUrl: r.url, ms: Date.now() - started };
   } catch (e) {
     return { ok: false, status: 0, finalUrl: admUrl, ms: Date.now() - started, error: String(e && e.message || e) };
+  }
+}
+
+
+
+function normKey(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'')}
+function firstVal(obj, names){
+  if(!obj || typeof obj!=='object') return '';
+  const map=new Map(Object.entries(obj).map(([k,v])=>[normKey(k),v]));
+  for(const n of names){const v=map.get(normKey(n)); if(v!==undefined && v!==null && String(v).trim()) return String(v).trim();}
+  return '';
+}
+function clientFromObject(o){
+  if(!o || typeof o!=='object' || Array.isArray(o)) return null;
+  const rfc=firstVal(o,['rfc','RFC','rfcCliente','RFCCliente','registroFederal']);
+  const legalName=firstVal(o,['razonSocial','razonsocial','nombreFiscal','denominacion','nombreRazonSocial','nombre']);
+  const commercialName=firstVal(o,['nombreComercial','nomComercial','comercial','alias']);
+  const phone=firstVal(o,['telefono','tel','telefono1','celular','movil']);
+  const email=firstVal(o,['correo','email','correoElectronico']);
+  const fiscalZip=firstVal(o,['codigoPostal','cp','codigoPostalFiscal','cpFiscal']);
+  const fiscalRegime=firstVal(o,['regimenFiscal','regimen','regimenfiscal']);
+  const cfdiUse=firstVal(o,['usoCfdi','usoCFDI','usoComprobante','cfdiUse']);
+  const address=firstVal(o,['direccion','domicilio','calle','direccionFiscal']);
+  const key=firstVal(o,['id','idCliente','clienteId','clave','claveCliente','codigo']);
+  const candidate = rfc || legalName || commercialName;
+  if(!candidate) return null;
+  if(rfc && !/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/i.test(rfc)) return null;
+  return {aspelId:key,rfc:rfc.toUpperCase(),legalName:legalName||commercialName,name:commercialName||legalName,phone,email,fiscalZip,fiscalRegime,cfdiUse,address};
+}
+function collectClientObjects(node, out, depth=0){
+  if(depth>8 || node==null) return;
+  if(Array.isArray(node)){for(const x of node) collectClientObjects(x,out,depth+1);return;}
+  if(typeof node!=='object') return;
+  const c=clientFromObject(node); if(c) out.push(c);
+  for(const v of Object.values(node)) if(v && typeof v==='object') collectClientObjects(v,out,depth+1);
+}
+function dedupeClients(items){
+  const m=new Map();
+  for(const c of items){
+    if(!c || (!c.rfc && !c.legalName && !c.name)) continue;
+    const k=(c.rfc||'').toUpperCase() || normKey(c.legalName||c.name);
+    const prev=m.get(k)||{};
+    const merged={...prev};
+    for(const [kk,v] of Object.entries(c)) if(v && !merged[kk]) merged[kk]=v;
+    m.set(k,merged);
+  }
+  return [...m.values()].filter(c=>c.rfc || c.legalName || c.name);
+}
+async function clickClients(page){
+  const menuSelectors=['button[aria-label*="menu" i]','button[title*="menu" i]','a[title*="menu" i]','button:has-text("☰")','button:has-text("»")','.menu-button','.navbar-toggler'];
+  let clients=null;
+  try{const x=page.getByText(/^Clientes$/i).first(); if(await x.count() && await x.isVisible({timeout:500})) clients=x;}catch{}
+  if(!clients){
+    for(const sel of menuSelectors){try{const b=page.locator(sel).first(); if(await b.count() && await b.isVisible({timeout:300})){await b.click(); await page.waitForTimeout(700); break;}}catch{}}
+    try{const x=page.getByText(/^Clientes$/i).first(); if(await x.count() && await x.isVisible({timeout:1500})) clients=x;}catch{}
+  }
+  if(clients){await clients.click(); return true;}
+  const fallbacks=['a:has-text("Clientes")','button:has-text("Clientes")','[href*="cliente" i]','[onclick*="cliente" i]'];
+  for(const sel of fallbacks){try{const x=page.locator(sel).first(); if(await x.count() && await x.isVisible({timeout:500})){await x.click(); return true;}}catch{}}
+  return false;
+}
+async function fetchClients(dataDir, admUrl){
+  await ensureSession(dataDir,admUrl);
+  let browser=null,context=null;
+  const found=[]; const jsonHits=[];
+  try{
+    browser=await chromium.launch(browserLaunchOptions());
+    let saved=null; try{saved=readEncrypted(files(dataDir).session,'aspel-session')}catch{}
+    context=await browser.newContext({viewport:{width:1100,height:760},...(saved?{storageState:saved}:{})});
+    const page=await context.newPage();
+    page.on('response',async r=>{
+      try{
+        const ct=String(r.headers()['content-type']||'');
+        if(/json/i.test(ct) && /client|cliente|catalog/i.test(r.url())){
+          const j=await r.json(); jsonHits.push(r.url()); collectClientObjects(j,found);
+        }
+      }catch{}
+    });
+    await page.route('**/*',route=>{const t=route.request().resourceType(); if(['image','media','font'].includes(t))return route.abort(); return route.continue();});
+    const principal=new URL('/principal.html',admUrl).href;
+    await page.goto(principal,{waitUntil:'domcontentloaded',timeout:45000});
+    await page.waitForTimeout(1800);
+    if(/login/i.test(page.url())){await ensureSession(dataDir,admUrl); throw new Error('ASPEL_SESSION_RETRY_REQUIRED');}
+    const clicked=await clickClients(page);
+    if(clicked){await page.waitForTimeout(3500); await page.waitForLoadState('networkidle',{timeout:9000}).catch(()=>{});}
+    // DOM fallback: toma filas visibles y detecta RFC/nombre si el portal no expuso JSON utilizable.
+    const rows=page.locator('table tbody tr, [role="row"]');
+    const rc=await rows.count().catch(()=>0);
+    for(let i=0;i<Math.min(rc,1000);i++){
+      try{
+        const row=rows.nth(i); if(!(await row.isVisible({timeout:80})))continue;
+        const txt=(await row.innerText()).replace(/\s+/g,' ').trim(); if(!txt)continue;
+        const rfc=(txt.toUpperCase().match(/\b[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}\b/)||[])[0]||'';
+        if(!rfc)continue;
+        const cells=await row.locator('td,[role="gridcell"],[role="cell"]').allInnerTexts().catch(()=>[]);
+        const clean=cells.map(x=>String(x).replace(/\s+/g,' ').trim()).filter(Boolean);
+        const name=clean.find(x=>x!==rfc && !/^\d+$/.test(x))||'';
+        found.push({rfc,name,legalName:name});
+      }catch{}
+    }
+    const state=await context.storageState(); writeEncrypted(files(dataDir).session,state,'aspel-session');
+    const clients=dedupeClients(found).filter(c=>String(c.rfc||'').toUpperCase()!=='XAXX010101000');
+    return {ok:true,clients,count:clients.length,url:page.url(),clickedClients:clicked,jsonSources:jsonHits.length,note:clients.length?`Se detectaron ${clients.length} clientes en Aspel.`:'Aspel abrió el catálogo, pero no pude extraer clientes automáticamente. Puede requerir calibrar el selector del catálogo.'};
+  } finally {
+    if(context)await context.close().catch(()=>{});
+    if(browser)await browser.close().catch(()=>{});
   }
 }
 
@@ -211,5 +461,5 @@ async function issueInvoice(dataDir, packet) {
   };
 }
 
-module.exports = { saveCredentials, credentialStatus, sessionStatus, ensureSession, testLogin, pingAspel, issueInvoice };
+module.exports = { saveCredentials, credentialStatus, sessionStatus, guardianRuntimeStatus, startSessionGuardian, stopSessionGuardian, ensureSession, testLogin, pingAspel, fetchClients, issueInvoice };
 

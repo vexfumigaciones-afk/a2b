@@ -27,12 +27,21 @@ function deviceToken() {
   return crypto.createHmac('sha256', secret).update('a2b-device-v1').digest('hex');
 }
 
+function adminSessionToken() {
+  const secret = requireSecret();
+  return crypto.createHmac('sha256', secret).update('a2b-admin-session-v1').digest('hex');
+}
+
 function isAdminSecret(candidate) {
   try { return timingSafeTextEqual(candidate, requireSecret()); } catch { return false; }
 }
 
 function isDeviceToken(candidate) {
   try { return timingSafeTextEqual(candidate, deviceToken()); } catch { return false; }
+}
+
+function isAdminSessionToken(candidate) {
+  try { return timingSafeTextEqual(candidate, adminSessionToken()); } catch { return false; }
 }
 
 function encryptObject(obj, label = 'vault') {
@@ -71,7 +80,7 @@ function readEncrypted(file, label) {
 }
 
 module.exports = {
-  requireSecret, deviceToken, isAdminSecret, isDeviceToken,
+  requireSecret, deviceToken, adminSessionToken, isAdminSecret, isDeviceToken, isAdminSessionToken,
   encryptObject, decryptObject, writeEncrypted, readEncrypted, atomicWrite
 };
 
