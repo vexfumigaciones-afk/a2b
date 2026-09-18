@@ -4,7 +4,7 @@ WORKDIR /app
 RUN mkdir -p /app && cat > /app/package.json <<'A2BPKG'
 {
   "name": "a2b-by-vex-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Secure A2B by VEX bridge for Aspel ADM and CFDI delivery",
   "type": "commonjs",
@@ -120,7 +120,7 @@ function saveCredentials(dataDir, creds) {
     user: String(creds.user || '').trim(),
     password: String(creds.password || '')
   };
-  if (!clean.user || !clean.password) throw new Error('Faltan usuario o contraseña de Aspel.');
+  if (!clean.rfc || !clean.user || !clean.password) throw new Error('Faltan RFC, usuario o contraseña de Aspel.');
   writeEncrypted(files(dataDir).creds, clean, 'aspel-credentials');
   return { rfc: clean.rfc, userMasked: mask(clean.user) };
 }
@@ -148,43 +148,95 @@ async function firstVisible(page, selectors) {
   return null;
 }
 
+async function semanticField(page, kind) {
+  const patterns = {
+    rfc: /rfc|registro federal/i,
+    user: /usuario|user|correo|email/i,
+    pass: /contrase(?:ñ|n)a|password|clave/i
+  };
+  try {
+    const byLabel = page.getByLabel(patterns[kind]).first();
+    if (await byLabel.count() && await byLabel.isVisible({ timeout: 500 })) return byLabel;
+  } catch {}
+  try {
+    const byPlaceholder = page.getByPlaceholder(patterns[kind]).first();
+    if (await byPlaceholder.count() && await byPlaceholder.isVisible({ timeout: 500 })) return byPlaceholder;
+  } catch {}
+  return null;
+}
+
+async function detectLoginFields(page) {
+  let rfc = await semanticField(page, 'rfc');
+  let user = await semanticField(page, 'user');
+  let pass = await semanticField(page, 'pass');
+
+  if (!rfc) rfc = await firstVisible(page, [
+    'input[name*="rfc" i]', 'input[id*="rfc" i]', 'input[placeholder*="rfc" i]'
+  ]);
+  if (!user) user = await firstVisible(page, [
+    'input[name*="usuario" i]', 'input[id*="usuario" i]', 'input[placeholder*="usuario" i]',
+    'input[name*="user" i]', 'input[id*="user" i]', 'input[type="email"]'
+  ]);
+  if (!pass) pass = await firstVisible(page, ['input[type="password"]']);
+
+  // Fallback específico para el login actual de ADM: RFC, Usuario, Contraseña.
+  const visibleText = page.locator('input:not([type="hidden"]):not([type="password"]):not([type="submit"]):not([type="button"])');
+  const count = await visibleText.count().catch(() => 0);
+  const visible = [];
+  for (let i = 0; i < count; i++) {
+    const loc = visibleText.nth(i);
+    try { if (await loc.isVisible({ timeout: 150 })) visible.push(loc); } catch {}
+  }
+  if (!rfc && visible.length >= 1) rfc = visible[0];
+  if (!user && visible.length >= 2) user = visible[1];
+  return { rfc, user, pass };
+}
+
 async function testLogin(dataDir, admUrl) {
   const creds = getCredentials(dataDir);
   if (!creds) throw new Error('Primero guarda las credenciales de Aspel en /setup.');
+  if (!creds.rfc || !creds.user || !creds.password) throw new Error('Las credenciales guardadas deben incluir RFC, usuario y contraseña.');
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
   const result = { ok: false, url: '', note: '' };
   try {
     await page.goto(admUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    const pass = await firstVisible(page, ['input[type="password"]']);
-    const user = await firstVisible(page, [
-      'input[type="email"]',
-      'input[name*="usuario" i]', 'input[id*="usuario" i]',
-      'input[name*="user" i]', 'input[id*="user" i]',
-      'input[name*="correo" i]', 'input[id*="correo" i]',
-      'input[type="text"]'
-    ]);
-    if (!pass || !user) {
-      result.note = 'No pude identificar automáticamente los campos de acceso. Guardé una captura para calibrar el selector.';
+    const { rfc, user, pass } = await detectLoginFields(page);
+    if (!rfc || !user || !pass) {
+      result.note = `No pude identificar los tres campos de Aspel (RFC:${!!rfc}, usuario:${!!user}, contraseña:${!!pass}).`;
       await page.screenshot({ path: files(dataDir).screenshot, fullPage: true });
       return result;
     }
+
+    await rfc.fill(creds.rfc);
     await user.fill(creds.user);
     await pass.fill(creds.password);
-    const submit = await firstVisible(page, [
+
+    let submit = null;
+    try {
+      const semanticSubmit = page.getByRole('button', { name: /iniciar sesi[oó]n|ingresar|entrar|iniciar/i }).first();
+      if (await semanticSubmit.count() && await semanticSubmit.isVisible({ timeout: 500 })) submit = semanticSubmit;
+    } catch {}
+    if (!submit) submit = await firstVisible(page, [
       'button[type="submit"]', 'input[type="submit"]',
-      'button:has-text("Ingresar")', 'button:has-text("Entrar")', 'button:has-text("Iniciar")'
+      'button:has-text("Iniciar sesión")', 'button:has-text("Ingresar")', 'button:has-text("Entrar")', 'button:has-text("Iniciar")'
     ]);
+
+    const beforeUrl = page.url();
     if (submit) await submit.click(); else await pass.press('Enter');
-    await page.waitForTimeout(4000);
-    await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
-    const passwordStillVisible = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
+    await page.waitForTimeout(5000);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
     result.url = page.url();
-    result.ok = !passwordStillVisible;
+    const passwordStillVisible = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
+    const loginButtonStillVisible = await page.getByRole('button', { name: /iniciar sesi[oó]n/i }).first().isVisible().catch(() => false);
+    const movedAway = result.url !== beforeUrl && !/login\.html|\/login\/?$/i.test(result.url);
+    result.ok = movedAway || (!passwordStillVisible && !loginButtonStillVisible);
     result.note = result.ok
-      ? 'La sesión parece haber iniciado. El estado del navegador quedó cifrado para futuras pruebas.'
-      : 'Aspel siguió mostrando el acceso. Puede requerir otro selector, verificación adicional o credenciales distintas.';
+      ? `Sesión iniciada correctamente en Aspel. URL final: ${result.url}`
+      : `Aspel mantuvo la pantalla de acceso después de enviar RFC + usuario + contraseña. URL: ${result.url}`;
+
     if (result.ok) {
       const state = await context.storageState();
       writeEncrypted(files(dataDir).session, state, 'aspel-session');
@@ -249,7 +301,7 @@ async function handler(req,res){
   const u=new URL(req.url,`http://${req.headers.host||'localhost'}`), p=u.pathname;
   if(req.method==='GET'&&p==='/'){res.writeHead(302,{Location:'/setup'});return res.end()}
   if(req.method==='GET'&&p==='/setup')return serveSetup(res);
-  if(req.method==='GET'&&p==='/api/health')return json(res,200,{ok:true,service:'A2B by VEX Aspel Bridge',version:'0.1.0',secureConfigured:secretReady()});
+  if(req.method==='GET'&&p==='/api/health')return json(res,200,{ok:true,service:'A2B by VEX Aspel Bridge',version:'0.2.0',secureConfigured:secretReady()});
 
   if(p.startsWith('/api/admin/')){
     if(!admin(req))return json(res,401,{error:'ADMIN_UNAUTHORIZED'});
