@@ -4,7 +4,7 @@ WORKDIR /app
 RUN mkdir -p /app && cat > /app/package.json <<'A2BPKG'
 {
   "name": "a2b-by-vex-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Secure A2B by VEX bridge for Aspel ADM and CFDI delivery",
   "type": "commonjs",
@@ -196,16 +196,44 @@ async function testLogin(dataDir, admUrl) {
   const creds = getCredentials(dataDir);
   if (!creds) throw new Error('Primero guarda las credenciales de Aspel en /setup.');
   if (!creds.rfc || !creds.user || !creds.password) throw new Error('Las credenciales guardadas deben incluir RFC, usuario y contraseña.');
-  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  const page = await context.newPage();
+  let browser = null;
+  let context = null;
   const result = { ok: false, url: '', note: '' };
   try {
-    await page.goto(admUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    browser = await chromium.launch({
+      headless: true,
+      chromiumSandbox: false,
+      args: [
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--disable-translate',
+        '--mute-audio',
+        '--no-first-run',
+        '--no-zygote',
+        '--renderer-process-limit=1',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--js-flags=--max-old-space-size=128'
+      ]
+    });
+    context = await browser.newContext({ viewport: { width: 900, height: 650 } });
+    const page = await context.newPage();
+    await page.route('**/*', route => {
+      const t = route.request().resourceType();
+      if (['image','media','font'].includes(t)) return route.abort();
+      return route.continue();
+    });
+    await page.goto(admUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
     const { rfc, user, pass } = await detectLoginFields(page);
     if (!rfc || !user || !pass) {
       result.note = `No pude identificar los tres campos de Aspel (RFC:${!!rfc}, usuario:${!!user}, contraseña:${!!pass}).`;
-      await page.screenshot({ path: files(dataDir).screenshot, fullPage: true });
+      await page.screenshot({ path: files(dataDir).screenshot, fullPage: false }).catch(() => {});
       return result;
     }
 
@@ -241,11 +269,31 @@ async function testLogin(dataDir, admUrl) {
       const state = await context.storageState();
       writeEncrypted(files(dataDir).session, state, 'aspel-session');
     } else {
-      await page.screenshot({ path: files(dataDir).screenshot, fullPage: true });
+      await page.screenshot({ path: files(dataDir).screenshot, fullPage: false }).catch(() => {});
     }
     return result;
+  } catch (e) {
+    const msg = String(e && e.message || e);
+    if (/browser.*closed|target.*closed|crash|ENOMEM|out of memory|killed/i.test(msg)) {
+      throw new Error('BROWSER_RESOURCE_ERROR: Chromium se cerró durante la prueba. En Render Free suele indicar falta de RAM.');
+    }
+    throw e;
   } finally {
-    await browser.close();
+    if (context) await context.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+async function pingAspel(admUrl) {
+  const started = Date.now();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    const r = await fetch(admUrl, { redirect: 'follow', signal: controller.signal, headers: { 'User-Agent': 'A2B-by-VEX/0.3' } });
+    clearTimeout(timer);
+    return { ok: r.status >= 200 && r.status < 500, status: r.status, finalUrl: r.url, ms: Date.now() - started };
+  } catch (e) {
+    return { ok: false, status: 0, finalUrl: admUrl, ms: Date.now() - started, error: String(e && e.message || e) };
   }
 }
 
@@ -260,7 +308,7 @@ async function issueInvoice(_dataDir, packet) {
   };
 }
 
-module.exports = { saveCredentials, credentialStatus, testLogin, issueInvoice };
+module.exports = { saveCredentials, credentialStatus, testLogin, pingAspel, issueInvoice };
 
 A2BASPEL
 RUN mkdir -p /app && cat > /app/server.js <<'A2BSERVER'
@@ -275,7 +323,7 @@ const aspel = require('./lib/aspel');
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const ASPEL_ADM_URL = process.env.ASPEL_ADM_URL || 'https://adm.aspel.com.mx/';
+const ASPEL_ADM_URL = process.env.ASPEL_ADM_URL || 'https://adm.aspel.com.mx/login.html';
 const invoicesFile = path.join(DATA_DIR, 'invoices.json');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -301,7 +349,7 @@ async function handler(req,res){
   const u=new URL(req.url,`http://${req.headers.host||'localhost'}`), p=u.pathname;
   if(req.method==='GET'&&p==='/'){res.writeHead(302,{Location:'/setup'});return res.end()}
   if(req.method==='GET'&&p==='/setup')return serveSetup(res);
-  if(req.method==='GET'&&p==='/api/health')return json(res,200,{ok:true,service:'A2B by VEX Aspel Bridge',version:'0.2.0',secureConfigured:secretReady()});
+  if(req.method==='GET'&&p==='/api/health')return json(res,200,{ok:true,service:'A2B by VEX Aspel Bridge',version:'0.3.0',secureConfigured:secretReady()});
 
   if(p.startsWith('/api/admin/')){
     if(!admin(req))return json(res,401,{error:'ADMIN_UNAUTHORIZED'});
@@ -309,8 +357,15 @@ async function handler(req,res){
     if(req.method==='POST'&&p==='/api/admin/aspel/credentials'){
       try{const b=await readBody(req);return json(res,200,{ok:true,...aspel.saveCredentials(DATA_DIR,b)})}catch(e){return json(res,400,{error:e.message})}
     }
+    if(req.method==='GET'&&p==='/api/admin/runtime'){
+      const m=process.memoryUsage();
+      return json(res,200,{ok:true,version:'0.3.0',memoryMB:{rss:Math.round(m.rss/1048576),heapUsed:Math.round(m.heapUsed/1048576),external:Math.round(m.external/1048576)}});
+    }
+    if(req.method==='POST'&&p==='/api/admin/aspel/ping'){
+      return json(res,200,{ok:true,result:await aspel.pingAspel(ASPEL_ADM_URL)});
+    }
     if(req.method==='POST'&&p==='/api/admin/aspel/test-login'){
-      try{return json(res,200,{ok:true,result:await aspel.testLogin(DATA_DIR,ASPEL_ADM_URL)})}catch(e){return json(res,500,{error:e.message})}
+      try{return json(res,200,{ok:true,result:await aspel.testLogin(DATA_DIR,ASPEL_ADM_URL)})}catch(e){console.error('ASPEL_TEST_LOGIN_ERROR',e);return json(res,500,{error:e.message})}
     }
     const m=p.match(/^\/api\/admin\/invoices\/([^/]+)\/complete$/);
     if(req.method==='POST'&&m){
@@ -359,7 +414,7 @@ RUN mkdir -p /app/public && cat > /app/public/setup.html <<'A2BSETUP'
 <div class="card"><h3>1. Entrar al setup</h3><p class="muted">Pega aquí el mismo <b>A2B_SECRET</b> que configuraste en Railway/Render. No se guarda en el navegador.</p><input id="secret" type="password" placeholder="A2B_SECRET"><button onclick="status()">Entrar / actualizar</button><div id="state" class="muted"></div></div>
 <div id="private" class="hidden">
 <div class="card"><h3>2. Vincular celulares</h3><p class="muted">En A2B: Clientes → Configuración → Aspel ADM. Pega la URL de este servidor y este token.</p><div id="token" class="code"></div><button onclick="copyToken()">Copiar token</button></div>
-<div class="card"><h3>3. Credenciales Aspel</h3><p class="muted">Se cifran con AES-256-GCM antes de escribirse en /data. La contraseña no vuelve a mostrarse.</p><div class="row"><div><label>RFC</label><input id="rfc"></div><div><label>Usuario</label><input id="user"></div></div><label>Contraseña</label><input id="password" type="password"><button onclick="saveCreds()">Guardar cifradas</button><button onclick="testLogin()">Probar inicio de sesión</button><div id="aspelState" class="muted"></div></div>
+<div class="card"><h3>3. Credenciales Aspel</h3><p class="muted">Se cifran con AES-256-GCM antes de escribirse en /data. La contraseña no vuelve a mostrarse.</p><div class="row"><div><label>RFC</label><input id="rfc"></div><div><label>Usuario</label><input id="user"></div></div><label>Contraseña</label><input id="password" type="password"><button onclick="saveCreds()">Guardar cifradas</button><button onclick="pingAspel()">Probar conexión</button><button onclick="testLogin()">Probar inicio de sesión</button><div id="aspelState" class="muted"></div></div>
 <div class="card"><h3>Facturas recibidas</h3><p class="muted">Mientras calibramos el timbrado automático de Aspel, las solicitudes quedan aquí sin duplicarse. Puedes completar PDF/XML manualmente y el celular los recupera con “Sincronizar”.</p><div id="invoices"></div></div>
 </div></div><script>
 const $=id=>document.getElementById(id);let admin='';let last=[];
@@ -367,7 +422,8 @@ async function api(path,opt={}){opt.headers={...(opt.headers||{}),'X-A2B-Admin':
 async function status(){admin=$('secret').value.trim();try{const x=await api('/api/admin/status');$('private').classList.remove('hidden');$('state').innerHTML='<span class="ok">Conectado.</span> Aspel '+(x.aspel.configured?'configurado ('+x.aspel.userMasked+')':'sin credenciales');$('token').textContent=x.deviceToken;last=x.invoices||[];renderInvoices()}catch(e){$('private').classList.add('hidden');$('state').innerHTML='<span class="bad">No autorizado: '+e.message+'</span>'}}
 function copyToken(){navigator.clipboard.writeText($('token').textContent);}
 async function saveCreds(){try{const x=await api('/api/admin/aspel/credentials',{method:'POST',body:JSON.stringify({rfc:$('rfc').value,user:$('user').value,password:$('password').value})});$('password').value='';$('aspelState').innerHTML='<span class="ok">Credenciales cifradas y guardadas para '+x.userMasked+'.</span>';await status()}catch(e){$('aspelState').innerHTML='<span class="bad">'+e.message+'</span>'}}
-async function testLogin(){try{$('aspelState').textContent='Probando Aspel… puede tardar un poco.';const x=await api('/api/admin/aspel/test-login',{method:'POST',body:'{}'});$('aspelState').innerHTML=x.result.ok?'<span class="ok">'+x.result.note+'</span>':'<span class="bad">'+x.result.note+'</span>'}catch(e){$('aspelState').innerHTML='<span class="bad">'+e.message+'</span>'}}
+async function pingAspel(){try{$('aspelState').textContent='Probando conexión ligera con Aspel…';const x=await api('/api/admin/aspel/ping',{method:'POST',body:'{}'});const r=x.result;$('aspelState').innerHTML=r.ok?'<span class="ok">Aspel responde por red. HTTP '+r.status+' · '+r.ms+' ms.</span>':'<span class="bad">No se pudo conectar a Aspel: '+(r.error||('HTTP '+r.status))+'</span>'}catch(e){$('aspelState').innerHTML='<span class="bad">'+e.message+'</span>'}}
+async function testLogin(){try{$('aspelState').textContent='Probando Aspel con navegador ligero… puede tardar un poco.';const x=await api('/api/admin/aspel/test-login',{method:'POST',body:'{}'});$('aspelState').innerHTML=x.result.ok?'<span class="ok">'+x.result.note+'</span>':'<span class="bad">'+x.result.note+'</span>'}catch(e){$('aspelState').innerHTML='<span class="bad">'+e.message+'</span>'}}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function renderInvoices(){$('invoices').innerHTML=last.length?last.map(i=>`<div class="invoice"><b>${esc(i.invoice)}</b> · ${esc(i.status)}<div class="muted">${esc(i.note||'')}</div>${i.status!=='TIMBRADA'?`<details><summary>Completar CFDI manualmente</summary><label>Folio</label><input id="f_${esc(i.bridgeId)}"><label>UUID</label><input id="u_${esc(i.bridgeId)}"><label>PDF</label><input type="file" accept=".pdf,application/pdf" id="p_${esc(i.bridgeId)}"><label>XML</label><input type="file" accept=".xml,application/xml,text/xml" id="x_${esc(i.bridgeId)}"><button onclick="complete('${esc(i.bridgeId)}')">Guardar PDF/XML</button></details>`:''}</div>`).join(''):'<p class="muted">Todavía no llegan facturas.</p>'}
 const file64=f=>new Promise((ok,fail)=>{if(!f)return ok('');const r=new FileReader;r.onload=()=>ok(String(r.result).split(',')[1]||'');r.onerror=fail;r.readAsDataURL(f)});
@@ -376,6 +432,6 @@ async function complete(id){try{const pdf=$('p_'+id).files[0],xml=$('x_'+id).fil
 
 A2BSETUP
 RUN npm install --omit=dev && mkdir -p /data
-ENV NODE_ENV=production PORT=3000 DATA_DIR=/data
+ENV NODE_ENV=production PORT=3000 DATA_DIR=/data NODE_OPTIONS=--max-old-space-size=128 MALLOC_ARENA_MAX=2
 EXPOSE 3000
 CMD ["npm","start"]
