@@ -45,6 +45,19 @@ const KEY='vexServiciosMotoV1';
 const defaults={settings:{companyName:'VEX Control de Plagas',companyPhone:'618 160 1000',licenseNumber:'24-10R0024',responsibleName:'Eduardo A. García Serrano',responsibleTitle:'Responsable sanitario',signatureData:'',vatRate:.16,isrRate:.0125,productCode:'72102103',unitCode:'E48',description:'Servicio de control de plagas',certPrefix:'VEX-CERT-',remPrefix:'VEX-NR-',quotePrefix:'VEX-COT-',seqCert:1048,seqService:0,seqQuote:0,seqRemission:0,seqInvoice:0,seqContract:0,contractPrefix:'VEX-CON-',lastProduct:{productApplied:'',activeIngredient:'',cofeprisReg:''},aspelBridgeUrl:'',aspelBridgeToken:'',aspelAdmUrl:'https://adm.aspel.com.mx/'},clients:[],techs:[{id:'TEC-001',name:'Eduardo A. García Serrano',phone:'',active:true}],services:[],quotes:[],remissions:[],invoices:[],certificates:[],contracts:[]};
 function load(){let x;try{x=JSON.parse(localStorage.getItem(KEY)||'null')}catch{};x=x||structuredClone(defaults);x.settings={...defaults.settings,...(x.settings||{})};for(const k of ['clients','techs','services','quotes','remissions','invoices','certificates','contracts'])if(!Array.isArray(x[k]))x[k]=[];if(!x.techs.length)x.techs=structuredClone(defaults.techs);return x}
 let db=load();
+// Si A2B se abre desde el mismo Bridge, toma automáticamente URL/token del setup.
+try{
+  const boot=JSON.parse(localStorage.getItem('a2bBridgeBootstrap')||'null');
+  if(boot){
+    if(boot.url) db.settings.aspelBridgeUrl=boot.url;
+    if(boot.token) db.settings.aspelBridgeToken=boot.token;
+    localStorage.removeItem('a2bBridgeBootstrap');
+    localStorage.setItem(KEY,JSON.stringify(db));
+  }else if(!db.settings.aspelBridgeUrl && /^https?:$/.test(location.protocol)){
+    db.settings.aspelBridgeUrl=location.origin;
+    localStorage.setItem(KEY,JSON.stringify(db));
+  }
+}catch{}
 const h=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const money=n=>Number(n||0).toLocaleString('es-MX',{style:'currency',currency:'MXN'});
 const today=()=>new Date().toISOString().slice(0,10);
