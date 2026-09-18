@@ -3,12 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
-const { requireSecret, deviceToken, isAdminSecret, isDeviceToken, atomicWrite } = require('./lib/crypto-store');
-const aspel = require('./lib/aspel');
+const { requireSecret, deviceToken, isAdminSecret, isDeviceToken, atomicWrite } = require('./crypto-store');
+const aspel = require('./aspel');
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const PUBLIC_DIR = __dirname;
 const ASPEL_ADM_URL = process.env.ASPEL_ADM_URL || 'https://adm.aspel.com.mx/login.html';
 const invoicesFile = path.join(DATA_DIR, 'invoices.json');
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -36,7 +36,16 @@ async function handler(req,res){
   const u=new URL(req.url,`http://${req.headers.host||'localhost'}`), p=u.pathname;
   if(req.method==='GET'&&(p==='/'||p==='/app'||p==='/app/'))return serveApp(res);
   if(req.method==='GET'&&p==='/setup')return serveSetup(res);
-  if(req.method==='GET'&&p==='/api/health')return json(res,200,{ok:true,service:'A2B by VEX Aspel Bridge',version:'0.7.0',secureConfigured:secretReady()});
+  if(req.method==='GET'&&['/manifest.webmanifest','/sw.js','/icon-192.png','/icon-512.png'].includes(p)){
+    const name=p.slice(1), f=path.join(PUBLIC_DIR,name);
+    const types={'.webmanifest':'application/manifest+json; charset=utf-8','.js':'application/javascript; charset=utf-8','.png':'image/png'};
+    if(!fs.existsSync(f))return json(res,404,{error:'ASSET_NOT_FOUND'});
+    const ext=path.extname(name);
+    const data=fs.readFileSync(f);
+    res.writeHead(200,cors({'Content-Type':types[ext]||'application/octet-stream','Content-Length':data.length,'Cache-Control':'public, max-age=3600'}));
+    return res.end(data);
+  }
+  if(req.method==='GET'&&p==='/api/health')return json(res,200,{ok:true,service:'A2B by VEX Aspel Bridge',version:'0.9.0',secureConfigured:secretReady()});
 
   if(p.startsWith('/api/admin/')){
     if(!admin(req))return json(res,401,{error:'ADMIN_UNAUTHORIZED'});
@@ -46,7 +55,7 @@ async function handler(req,res){
     }
     if(req.method==='GET'&&p==='/api/admin/runtime'){
       const m=process.memoryUsage();
-      return json(res,200,{ok:true,version:'0.7.0',memoryMB:{rss:Math.round(m.rss/1048576),heapUsed:Math.round(m.heapUsed/1048576),external:Math.round(m.external/1048576)}});
+      return json(res,200,{ok:true,version:'0.9.0',memoryMB:{rss:Math.round(m.rss/1048576),heapUsed:Math.round(m.heapUsed/1048576),external:Math.round(m.external/1048576)}});
     }
     if(req.method==='POST'&&p==='/api/admin/aspel/ping'){
       return json(res,200,{ok:true,result:await aspel.pingAspel(ASPEL_ADM_URL)});

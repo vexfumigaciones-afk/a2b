@@ -1,27 +1,11 @@
-# A2B by VEX — Bridge v0.8
+# A2B by VEX — v0.9 flat
 
-Esta versión corrige el fallo de build de Render causado por incrustar HTML/base64 enorme dentro de un heredoc del Dockerfile.
+Versión preparada para subir desde la web de GitHub sin carpetas.
 
-## Archivos que deben quedar en GitHub
+Todos los archivos van en la raíz del repositorio.
 
-- `Dockerfile`
-- `package.json`
-- `server.js`
-- `lib/crypto-store.js`
-- `lib/aspel.js`
-- `public/index.html`
-- `public/setup.html`
-- `public/manifest.webmanifest`
-- `public/sw.js`
-- `public/icon-192.png`
-- `public/icon-512.png`
-
-## Render
-
-- Runtime: Docker
+Render:
 - Root Directory: vacío
-- Dockerfile Path: `./Dockerfile`
-- Health Check Path: `/api/health`
-- Environment: `A2B_SECRET` (mínimo 24 caracteres)
-
-No subas credenciales Aspel a GitHub. Se capturan en `/setup`.
+- Dockerfile Path: ./Dockerfile
+- Health Check: /api/health
+- conservar A2B_SECRET
