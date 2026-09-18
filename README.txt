@@ -1,5 +1,12 @@
-A2B by VEX Bridge v0.5
-- Conserva el login Aspel que ya funcionó.
-- La app raíz / usa A2B v1.8.
-- Certificado restaurado con el formato maestro VEX 2026 proporcionado por el usuario.
-Sube/reemplaza SOLO Dockerfile en el repo y deja que Render redepliegue.
+A2B by VEX · Bridge v0.7 / App v2.0
+
+Cambios:
+- Navegación Home / Servicios / Clientes / Documentos / Certificados / Aspel / Setup.
+- Sesión Aspel persistente cifrada y autorrenovable cuando expira.
+- Constancia de Situación Fiscal PDF: lectura local en navegador para autollenar RFC, razón social, CP y régimen.
+- Nombre comercial independiente de razón social: certificado usa comercial; factura usa fiscal.
+- Cierre de orden permite "Omitir firma" y deja la omisión asentada en orden/PDF.
+- Certificado oficial VEX conservado.
+
+Para actualizar Render: reemplaza el Dockerfile del repo por este Dockerfile y haz commit.
+IMPORTANTE: la conexión/sesión de Aspel queda estable y se renueva; el llenado/timbrado automático del CFDI sigue en calibración para no emitir facturas incorrectas.
