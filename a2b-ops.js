@@ -289,7 +289,7 @@ function sync(){
   if(!/^https?:$/.test(location.protocol))return;
   try{
    const r=await fetch('/api/ops/sync',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({origin,services:db.services})});
+   body:JSON.stringify({origin,services:db.services.map(s=>({id:s.id,date:s.date,time:s.time,clientName:s.clientName,address:s.address,technicianName:s.technicianName,serviceType:s.serviceType,status:s.status,productApplied:s.productApplied,areasTreated:s.areasTreated,pestsTreated:s.pestsTreated,dose:s.dose,cofeprisReg:s.cofeprisReg}))})});
    if(!r.ok){const x=await r.json().catch(()=>({}));throw Error(x.error||r.status)}
   }catch(e){console.warn('A2B: servicios aún no sincronizados:',e.message)}
  },900);
