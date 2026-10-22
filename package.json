@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check crypto-store.js && node --check aspel.js"
+    "check": "node --check server.js && node --check crypto-store.js && node --check aspel.js && node --check ops-store.js"
   },
   "dependencies": {
     "playwright": "1.55.0"
