@@ -3,9 +3,9 @@ FROM mcr.microsoft.com/playwright:v1.55.0-noble
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
-COPY server.js aspel.js crypto-store.js ./
-COPY index.html setup.html manifest.webmanifest sw.js icon-192.png icon-512.png ./
-RUN mkdir -p /data && node --check server.js && node --check crypto-store.js && node --check aspel.js
+COPY server.js aspel.js crypto-store.js ops-store.js ./
+COPY index.html setup.html manifest.webmanifest sw.js a2b-ops.js icon-192.png icon-512.png ./
+RUN mkdir -p /data && node --check server.js && node --check crypto-store.js && node --check aspel.js && node --check ops-store.js && node --check a2b-ops.js
 ENV NODE_ENV=production \
     PORT=3000 \
     DATA_DIR=/data \
