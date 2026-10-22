@@ -1,6 +1,6 @@
 {
   "name": "a2b-by-vex-bridge",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "A2B by VEX bridge for Aspel ADM, CFDI delivery and field operations",
   "type": "commonjs",
