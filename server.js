@@ -18,7 +18,8 @@ function loadInvoices() { try { return JSON.parse(fs.readFileSync(invoicesFile, 
 function saveInvoices(x) { atomicWrite(invoicesFile, JSON.stringify(x, null, 2)); }
 function json(res, status, obj) { const body = JSON.stringify(obj); res.writeHead(status, cors({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) })); res.end(body); }
 function text(res, status, body, type='text/plain; charset=utf-8') { res.writeHead(status, cors({ 'Content-Type': type })); res.end(body); }
-function cors(headers={}) { return { 'Access-Control-Allow-Origin':'*', 'Access-Control-Allow-Headers':'Content-Type, Authorization, X-A2B-Admin', 'Access-Control-Allow-Methods':'GET,POST,OPTIONS', 'Cache-Control':'no-store', ...headers }; }
+function cors(headers={}) { return { 'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff', 'Referrer-Policy':'no-referrer', 'X-Frame-Options':'DENY', 'Content-Security-Policy':"frame-ancestors 'none'; object-src 'none'; base-uri 'self'", ...headers }; }
+function sameOrigin(req) { const origin=req.headers.origin; if(!origin)return true; const host=req.headers.host; const protocol=String(req.headers['x-forwarded-proto']|| (req.socket.encrypted?'https':'http')).split(',')[0].trim(); return !!host && origin===protocol+'://'+host; }
 function bearer(req) { const m=String(req.headers.authorization||'').match(/^Bearer\s+(.+)$/i); return m?m[1]:''; }
 function cookies(req){const out={};for(const part of String(req.headers.cookie||'').split(';')){const i=part.indexOf('=');if(i<0)continue;const k=part.slice(0,i).trim(),v=part.slice(i+1).trim();if(k)out[k]=decodeURIComponent(v)}return out}
 function cookieHeader(name,value,maxAge){return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`}
@@ -36,11 +37,12 @@ function serveSetup(res){const f=path.join(PUBLIC_DIR,'setup.html');text(res,200
 function serveApp(res){const f=path.join(PUBLIC_DIR,'index.html');text(res,200,fs.readFileSync(f,'utf8'),'text/html; charset=utf-8')}
 
 async function handler(req,res){
+  if(!sameOrigin(req)) return json(res,403,{error:'CROSS_ORIGIN_FORBIDDEN'});
   if(req.method==='OPTIONS'){res.writeHead(204,cors());return res.end()}
   const u=new URL(req.url,`http://${req.headers.host||'localhost'}`), p=u.pathname;
   if(req.method==='GET'&&(p==='/'||p==='/app'||p==='/app/'))return serveApp(res);
   if(req.method==='GET'&&p==='/setup')return serveSetup(res);
-  if(req.method==='GET'&&['/manifest.webmanifest','/sw.js','/icon-192.png','/icon-512.png'].includes(p)){
+  if(req.method==='GET'&&['/manifest.webmanifest','/sw.js','/icon-192.png','/icon-512.png','/a2b-ops.js'].includes(p)){
     const name=p.slice(1), f=path.join(PUBLIC_DIR,name);
     const types={'.webmanifest':'application/manifest+json; charset=utf-8','.js':'application/javascript; charset=utf-8','.png':'image/png'};
     if(!fs.existsSync(f))return json(res,404,{error:'ASSET_NOT_FOUND'});
@@ -54,7 +56,8 @@ async function handler(req,res){
   if(p.startsWith('/api/admin/')){
     if(!admin(req))return json(res,401,{error:'ADMIN_UNAUTHORIZED'});
     rememberAdmin(req,res);
-    if(req.method==='GET'&&p==='/api/admin/status')return json(res,200,{ok:true,deviceToken:deviceToken(),aspel:aspel.credentialStatus(DATA_DIR),session:aspel.sessionStatus(DATA_DIR),aspelAdmUrl:ASPEL_ADM_URL,invoices:Object.values(loadInvoices()).map(x=>invoicePublic(x,false)).reverse()});
+    if(req.method==='POST'&&p==='/api/admin/link-device'){res.setHeader('Set-Cookie',cookieHeader('a2b_device',deviceToken(),31536000));return json(res,200,{ok:true,linked:true});}
+    if(req.method==='GET'&&p==='/api/admin/status')return json(res,200,{ok:true,deviceLinked:device(req),aspel:aspel.credentialStatus(DATA_DIR),session:aspel.sessionStatus(DATA_DIR),aspelAdmUrl:ASPEL_ADM_URL,invoices:Object.values(loadInvoices()).map(x=>invoicePublic(x,false)).reverse()});
     if(req.method==='POST'&&p==='/api/admin/aspel/credentials'){
       try{
         const b=await readBody(req), saved=aspel.saveCredentials(DATA_DIR,b);
