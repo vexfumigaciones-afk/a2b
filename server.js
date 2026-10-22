@@ -52,7 +52,7 @@ async function handler(req,res){
     res.writeHead(200,cors({'Content-Type':types[ext]||'application/octet-stream','Content-Length':data.length,'Cache-Control':'public, max-age=3600'}));
     return res.end(data);
   }
-  if(req.method==='GET'&&p==='/api/health')return json(res,200,{ok:true,service:'A2B by VEX Aspel Bridge',version:'1.2.0',secureConfigured:secretReady(),aspelGuardian:aspel.guardianRuntimeStatus()});
+  if(req.method==='GET'&&p==='/api/health')return json(res,200,{ok:true,service:'A2B by VEX Aspel Bridge',version:'1.3.0',secureConfigured:secretReady(),aspelGuardian:aspel.guardianRuntimeStatus()});
 
   if(p.startsWith('/api/admin/')){
     if(!admin(req))return json(res,401,{error:'ADMIN_UNAUTHORIZED'});
@@ -68,7 +68,7 @@ async function handler(req,res){
     }
     if(req.method==='GET'&&p==='/api/admin/runtime'){
       const m=process.memoryUsage();
-      return json(res,200,{ok:true,version:'1.2.0',memoryMB:{rss:Math.round(m.rss/1048576),heapUsed:Math.round(m.heapUsed/1048576),external:Math.round(m.external/1048576)}});
+      return json(res,200,{ok:true,version:'1.3.0',memoryMB:{rss:Math.round(m.rss/1048576),heapUsed:Math.round(m.heapUsed/1048576),external:Math.round(m.external/1048576)}});
     }
     if(req.method==='POST'&&p==='/api/admin/aspel/ping'){
       return json(res,200,{ok:true,result:await aspel.pingAspel(ASPEL_ADM_URL)});
