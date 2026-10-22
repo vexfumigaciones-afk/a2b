@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { URL } = require('url');
 const { requireSecret, deviceToken, adminSessionToken, isAdminSecret, isDeviceToken, isAdminSessionToken, atomicWrite } = require('./crypto-store');
 const aspel = require('./aspel');
+const ops = require('./ops-store');
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -102,6 +103,20 @@ async function handler(req,res){
     return json(res,404,{error:'ASPEL_ROUTE_NOT_FOUND'});
   }
 
+  if(p.startsWith('/api/ops/')){
+    if(!device(req)&&!admin(req))return json(res,401,{error:'DEVICE_UNAUTHORIZED'});
+    try{
+      if(req.method==='GET'&&p==='/api/ops/settings')return json(res,200,ops.settings(DATA_DIR));
+      if(req.method==='POST'&&p==='/api/ops/settings'){
+        if(!admin(req))return json(res,403,{error:'ADMIN_REQUIRED'});
+        return json(res,200,ops.setSettings(DATA_DIR,await readBody(req,20000)));
+      }
+      if(req.method==='POST'&&p==='/api/ops/sync')return json(res,200,ops.sync(DATA_DIR,await readBody(req,1024*1024)));
+      if(req.method==='GET'&&p==='/api/ops/daily')return json(res,200,ops.daily(DATA_DIR,u.searchParams.get('date')||ops.localTime().date));
+      return json(res,404,{error:'OPS_ROUTE_NOT_FOUND'});
+    }catch(e){return json(res,400,{error:e.message==='BODY_TOO_LARGE'?'BODY_TOO_LARGE':e.message})}
+  }
+
   if(p.startsWith('/api/invoices')){
     if(!device(req))return json(res,401,{error:'DEVICE_UNAUTHORIZED'});
     rememberDevice(req,res);
@@ -125,6 +140,7 @@ const server=http.createServer((req,res)=>Promise.resolve(handler(req,res)).catc
 server.listen(PORT,'0.0.0.0',()=>{
   console.log(`A2B Bridge escuchando en :${PORT}`);
   console.log(secretReady()?'Seguridad: A2B_SECRET configurado.':'ATENCIÓN: configura A2B_SECRET antes de usar credenciales o facturación.');
+  ops.start(DATA_DIR);
   const g=aspel.startSessionGuardian(DATA_DIR,ASPEL_ADM_URL);
   console.log(`Aspel Session Guardian activo cada ${Math.round(g.intervalMs/60000)} min.`);
 });
