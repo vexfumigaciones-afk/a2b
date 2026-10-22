@@ -5,7 +5,7 @@ const {readEncrypted, writeEncrypted} = require('./crypto-store');
 const ZONE = 'America/Monterrey';
 const LABEL = 'a2b-operations';
 const MAX = 3000;
-const policyDefaults = Object.freeze({start:'', end:'', days:[1,2,3,4,5,6], preparationTime:'06:00'});
+const policyDefaults = Object.freeze({start:'', end:'', days:[0,1,2,3,4,5,6], preparationTime:'06:00'});
 function file(dir) {return path.join(dir,'operations.enc');}
 function localTime(now=new Date()) {
   const parts = new Intl.DateTimeFormat('en-US',{timeZone:ZONE,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now);
